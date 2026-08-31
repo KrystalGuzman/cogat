@@ -1,0 +1,11 @@
+{
+  "name": "cogat-practice",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A CogAT-style cognitive abilities practice test, score evaluator, and guided walkthrough trainer.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "serve": "node scripts/serve.js"
+  },
+  "license": "MIT"
+}
