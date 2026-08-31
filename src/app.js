@@ -5,10 +5,12 @@
   var Scoring = window.CogatScoring;
   var Bank = window.CogatBank;
   var Figures = window.Figures;
+  var Exporter = window.CogatExport;
 
   var LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
   var STORE_PROFILE = 'cogat.profile.v1';
   var STORE_HISTORY = 'cogat.history.v1';
+  var HISTORY_LIMIT = 12;
 
   var BATTERY_ORDER = ['verbal', 'quantitative', 'nonverbal'];
   var SUBTEST_ORDER = [
@@ -53,8 +55,12 @@
     try {
       var list = loadHistory();
       list.unshift(entry);
-      localStorage.setItem(STORE_HISTORY, JSON.stringify(list.slice(0, 12)));
-    } catch (e) { /* private mode */ }
+      localStorage.setItem(STORE_HISTORY, JSON.stringify(list.slice(0, HISTORY_LIMIT)));
+    } catch (e) { /* private mode, or the quota is full */ }
+  }
+
+  function clearHistory() {
+    try { localStorage.removeItem(STORE_HISTORY); } catch (e) { /* private mode */ }
   }
 
   function ageMonths() {
@@ -368,20 +374,53 @@
     ]);
 
     var history = loadHistory();
+    var fileInput = h('input', {
+      type: 'file', accept: '.json,application/json', id: 'open-report', class: 'visually-hidden',
+      onchange: function (e) {
+        var file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (file) openReportFile(file);
+      }
+    });
+
     var historyCard = h('div', { class: 'card' }, [
-      h('h2', { text: 'Recent results' }),
+      h('h2', { text: 'Saved results' }),
       history.length
         ? h('ul', { class: 'history' }, history.map(function (entry) {
+            var reopenable = Array.isArray(entry.itemIds) && entry.itemIds.length && entry.answers;
             return h('li', {}, [
               h('strong', { text: entry.label }),
               h('span', { class: 'pill', text: entry.raw + '/' + entry.possible + ' correct' }),
               entry.sas ? h('span', { class: 'pill', text: 'SAS ' + entry.sas }) : null,
               entry.profile ? h('span', { class: 'pill', text: 'Profile ' + entry.profile }) : null,
               h('span', { class: 'spacer' }),
-              h('span', { class: 'when', text: new Date(entry.at).toLocaleString() })
+              h('span', { class: 'when', text: new Date(entry.at).toLocaleString() }),
+              reopenable
+                ? h('button', { class: 'btn btn-quiet', type: 'button',
+                    onclick: function () {
+                      var result = reopenReport(entry);
+                      if (!result.ok) window.alert(result.error);
+                    } }, ['Open report'])
+                : h('span', { class: 'when', text: '(summary only)' })
             ]);
           }))
-        : h('p', { class: 'empty', text: 'No completed tests yet.' })
+        : h('p', { class: 'empty', text: 'No completed tests yet.' }),
+      h('div', { class: 'btn-row', style: 'margin-top:14px' }, [
+        fileInput,
+        h('button', { class: 'btn', type: 'button',
+          onclick: function () { fileInput.click(); } }, ['Open a saved report file…']),
+        history.length
+          ? h('button', { class: 'btn btn-quiet', type: 'button', onclick: function () {
+              if (window.confirm('Clear the list of saved results on this device? Files you have already downloaded are not affected.')) {
+                clearHistory();
+                renderHome();
+              }
+            } }, ['Clear list'])
+          : null
+      ]),
+      h('p', { class: 'lede', style: 'margin:10px 0 0;font-size:.84rem', text:
+        'Results are kept in this browser only, and the most recent ' + HISTORY_LIMIT + ' are retained. ' +
+        'Download a report to keep it permanently or move it to another device.' })
     ]);
 
     mount([intro, setup, modes, practice, historyCard, scoringExplainer()]);
@@ -526,11 +565,89 @@
       raw: state.report.totals.raw,
       possible: state.report.totals.possible,
       sas: comp ? comp.sas : null,
-      profile: state.report.profile.available ? state.report.profile.label : null
+      profile: state.report.profile.available ? state.report.profile.label : null,
+      // Kept so the report can be reopened in full, not just summarised.
+      grade: state.profile.grade,
+      ageMonths: ageMonths(),
+      elapsedSec: Math.round(state.report.elapsedSec),
+      timedOut: timedOut,
+      itemIds: s.items.map(function (i) { return i.id; }),
+      answers: s.answers
     });
 
     state.screen = 'results';
     renderResults();
+  }
+
+  // -------------------------------------------------- reopening a report ---
+
+  /**
+   * Rebuild a session from stored item ids plus answers and re-score it, so a
+   * reopened report supports review and retake exactly like a fresh one.
+   * @returns {{ok:boolean, error?:string, missing?:Array}}
+   */
+  function reopenReport(saved) {
+    var byId = {};
+    Bank.items.forEach(function (i) { byId[i.id] = i; });
+
+    var missing = [];
+    var items = [];
+    saved.itemIds.forEach(function (id) {
+      if (byId[id]) items.push(byId[id]);
+      else missing.push(id);
+    });
+
+    if (!items.length) {
+      return { ok: false, error: 'None of the questions in that report exist in the current question bank.' };
+    }
+
+    var grade = typeof saved.grade === 'number' ? saved.grade
+      : (saved.learner && saved.learner.grade);
+    var months = typeof saved.ageMonths === 'number' ? saved.ageMonths
+      : (saved.learner && saved.learner.ageMonths);
+
+    state.session = {
+      label: saved.label || 'Saved report',
+      items: items,
+      index: 0,
+      answers: saved.answers || {},
+      flagged: {},
+      startedAt: saved.takenAt ? new Date(saved.takenAt).getTime() : (saved.at || Date.now()),
+      limitSec: timeBudget(items),
+      reopened: true
+    };
+
+    state.report = Scoring.scoreSession({
+      items: items,
+      answers: state.session.answers,
+      grade: typeof grade === 'number' ? grade : state.profile.grade,
+      ageMonths: typeof months === 'number' ? months : ageMonths()
+    });
+    state.report.label = state.session.label;
+    state.report.timedOut = !!saved.timedOut;
+    state.report.elapsedSec = saved.elapsedSec || 0;
+    state.report.takenAt = state.session.startedAt;
+    state.report.reopened = true;
+    state.report.missingItems = missing;
+
+    stopTimer();
+    timerEl.hidden = true;
+    homeBtn.hidden = false;
+    state.screen = 'results';
+    renderResults();
+    return { ok: true, missing: missing };
+  }
+
+  function openReportFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var parsed = Exporter.parseSavedReport(String(reader.result));
+      if (!parsed.ok) { window.alert(parsed.error); return; }
+      var result = reopenReport(parsed.data);
+      if (!result.ok) window.alert(result.error);
+    };
+    reader.onerror = function () { window.alert('That file could not be read.'); };
+    reader.readAsText(file);
   }
 
   // ------------------------------------------------------- results screen ---
@@ -639,7 +756,16 @@
       ])
     ]);
 
-    mount([hero, table, profileCard, subtestCard, actions, scoringExplainer()]);
+    var notices = [];
+    if (r.reopened) {
+      notices.push(h('p', { class: 'lede', text: 'Reopened from a saved report.' +
+        (r.missingItems && r.missingItems.length
+          ? ' ' + r.missingItems.length + ' question(s) in the file are no longer in the question bank and were left out, so these scores may differ slightly from the original.'
+          : '') }));
+    }
+    if (notices.length) hero.appendChild(h('div', {}, notices));
+
+    mount([hero, table, profileCard, subtestCard, saveCard(), actions, scoringExplainer()]);
   }
 
   function stat(value, key) {
@@ -797,39 +923,292 @@
     mount([head, h('div', { class: 'card' }, body)]);
   }
 
+  // ------------------------------------------------- saved-report document ---
+
+  /**
+   * Build the report as a standalone document, reusing the stem, choice and
+   * walkthrough builders so the saved copy always matches what was on screen.
+   * Styling comes from Exporter.DOC_CSS, not the app stylesheet.
+   * @param {boolean} includeReview append every question with its walkthrough
+   * @returns {HTMLElement} a `.cogat-doc` element
+   */
+  function buildReportDocument(includeReview) {
+    var r = state.report;
+    var s = state.session;
+    var comp = r.composite;
+    var taken = r.takenAt || (s && s.startedAt) || Date.now();
+
+    var doc = h('div', { class: 'cogat-doc' });
+
+    doc.appendChild(h('div', { class: 'doc-head' }, [
+      h('h1', { text: 'CogAT-Style Practice — Score Report' }),
+      h('div', { class: 'doc-meta' }, [
+        h('span', { text: r.label }),
+        h('span', { text: gradeLabel(r.grade) }),
+        h('span', { text: 'Age ' + Math.floor(r.ageMonths / 12) + 'y ' + (r.ageMonths % 12) + 'm' }),
+        h('span', { text: 'Taken ' + new Date(taken).toLocaleDateString() }),
+        r.elapsedSec >= 1 ? h('span', { text: 'Time used ' + fmtTime(r.elapsedSec) }) : null,
+        r.timedOut ? h('span', { text: 'Time expired' }) : null
+      ])
+    ]));
+
+    // Headline numbers.
+    var summary = h('div', { class: 'doc-summary' });
+    if (comp) summary.appendChild(docStat(comp.sas, (comp.batteriesIncluded === 3 ? 'VQN composite' : 'Composite') + ' SAS', true));
+    summary.appendChild(docStat(r.totals.raw + ' / ' + r.totals.possible, 'Raw score'));
+    if (comp) {
+      summary.appendChild(docStat(ordinal(comp.apr), 'Age percentile'));
+      summary.appendChild(docStat(comp.stanine, 'Stanine'));
+      summary.appendChild(docStat(Scoring.interpretSAS(comp.sas), 'Band'));
+    }
+    doc.appendChild(h('div', { class: 'doc-section' }, [summary]));
+
+    // Battery table.
+    doc.appendChild(h('div', { class: 'doc-section' }, [
+      h('h2', { text: 'Battery scores' }),
+      h('table', {}, [
+        h('thead', {}, [h('tr', {}, ['Battery', 'Raw', 'USS', 'SAS', '±1 SEM', 'Age %ile', 'Grade %ile', 'Stanine']
+          .map(function (t) { return h('th', { text: t }); }))]),
+        h('tbody', {}, BATTERY_ORDER.filter(function (b) { return r.batteries[b]; }).map(function (b) {
+          var x = r.batteries[b];
+          return h('tr', {}, [
+            h('td', { text: Scoring.BATTERY_LABELS[b] }),
+            h('td', { text: x.raw + '/' + x.possible }),
+            h('td', { text: String(x.uss) }),
+            h('td', { text: String(x.sas) }),
+            h('td', { text: x.sasBand[0] + '–' + x.sasBand[1] }),
+            h('td', { text: ordinal(x.apr) }),
+            h('td', { text: ordinal(x.gpr) }),
+            h('td', { text: String(x.stanine) })
+          ]);
+        }))
+      ])
+    ]));
+
+    // Ability profile.
+    var prof = r.profile;
+    doc.appendChild(h('div', { class: 'doc-section' }, [
+      h('h2', { text: 'Ability profile' }),
+      prof.available
+        ? h('div', {}, [
+            h('div', { class: 'doc-profile-tag', text: prof.label }),
+            h('p', { text: prof.description }),
+            prof.marks.length
+              ? h('div', { class: 'doc-marks' }, prof.marks.map(function (m) {
+                  return h('span', { class: 'doc-mark ' + (m.direction === 'strength' ? 'up' : 'down'),
+                    text: Scoring.BATTERY_LABELS[m.battery] + ' ' + (m.diff > 0 ? '+' : '') + m.diff + ' SAS vs. own average' });
+                }))
+              : h('p', { text: 'No battery differed from the three-battery average by ' + Scoring.SIGNIFICANT_SAS_DIFF + ' SAS points or more.' })
+          ])
+        : h('p', { text: prof.reason })
+    ]));
+
+    // Subtest breakdown.
+    doc.appendChild(h('div', { class: 'doc-section' }, [
+      h('h2', { text: 'Subtest breakdown' }),
+      h('p', { text: 'Individual subtests are far too short for a scaled score. Read these as a rough map of where the misses clustered, not as abilities in their own right.' }),
+      h('table', {}, [
+        h('thead', {}, [h('tr', {}, ['Subtest', 'Battery', 'Correct', '%']
+          .map(function (t) { return h('th', { text: t }); }))]),
+        h('tbody', {}, SUBTEST_ORDER.filter(function (id) {
+          return r.subtests.some(function (x) { return x.subtest === id; });
+        }).map(function (id) {
+          var x = r.subtests.filter(function (y) { return y.subtest === id; })[0];
+          return h('tr', {}, [
+            h('td', { text: Bank.subtests[id].name }),
+            h('td', { text: Scoring.BATTERY_LABELS[x.battery] }),
+            h('td', { text: x.raw + '/' + x.possible }),
+            h('td', { text: x.percentCorrect + '%' })
+          ]);
+        }))
+      ])
+    ]));
+
+    // The score explanation travels with the document; a report read months
+    // later is useless without it.
+    doc.appendChild(h('div', { class: 'doc-section' }, [
+      h('h2', { text: 'How these scores are calculated' }),
+      h('dl', {}, flatten(SCORE_GLOSSARY.map(function (entry) {
+        return [h('dt', { text: entry.term }), h('dd', { text: entry.text })];
+      })))
+    ]));
+
+    if (includeReview && s) {
+      doc.appendChild(h('div', { class: 'doc-section page-break' }, [
+        h('h2', { text: 'Answer review' }),
+        h('p', { text: 'Every question with the correct answer marked, the answer given, and the reasoning step by step.' })
+      ].concat(s.items.map(function (item) {
+        var selected = s.answers[item.id];
+        var answered = selected !== undefined;
+        var correct = answered && selected === item.answer;
+        return h('div', { class: 'doc-item' }, [
+          h('div', { class: 'doc-item-head' }, [
+            h('span', { class: 'doc-tag', text: Bank.subtests[item.subtest].name }),
+            h('span', {
+              class: 'doc-tag ' + (correct ? 'ok' : answered ? 'no' : 'skip'),
+              text: correct ? 'Correct' : answered ? 'Incorrect' : 'Not answered'
+            }),
+            h('span', { class: 'spacer' }),
+            h('span', { class: 'doc-tag', text: 'Answer ' + LETTERS[item.answer] })
+          ]),
+          renderStem(item),
+          renderChoices(item, answered ? selected : null, function () {}, { correct: true }),
+          renderWalkthrough(item, answered ? selected : null)
+        ]);
+      }))));
+    }
+
+    doc.appendChild(h('div', { class: 'doc-foot', text:
+      'Generated by an independent CogAT-style practice tool. CogAT\u00ae is a registered trademark of its ' +
+      'publisher; this project is not affiliated with or endorsed by them. The official norm tables are ' +
+      'proprietary, so these scores come from an open approximation and are not official CogAT scores. ' +
+      'Use them to decide what to practise, not to predict a real score or make placement decisions.' }));
+
+    return doc;
+  }
+
+  // ------------------------------------------------------------- saving ---
+
+  function reportPayload() {
+    var s = state.session;
+    return {
+      report: state.report,
+      label: state.report.label,
+      grade: state.report.grade,
+      ageMonths: state.report.ageMonths,
+      takenAt: state.report.takenAt || (s && s.startedAt),
+      itemIds: s ? s.items.map(function (i) { return i.id; }) : [],
+      answers: s ? s.answers : {}
+    };
+  }
+
+  function saveAsHtml(includeReview) {
+    var doc = buildReportDocument(includeReview);
+    var title = 'CogAT Practice Report — ' + state.report.label;
+    Exporter.download(
+      Exporter.filename(state.report.label, 'html', state.report.takenAt),
+      Exporter.wrapDocument(title, doc.outerHTML),
+      'text/html'
+    );
+  }
+
+  function saveAsJson() {
+    Exporter.download(
+      Exporter.filename(state.report.label, 'json', state.report.takenAt),
+      Exporter.toJSON(reportPayload()),
+      'application/json'
+    );
+  }
+
+  function saveAsCsv() {
+    var subtestNames = {};
+    Object.keys(Bank.subtests).forEach(function (id) { subtestNames[id] = Bank.subtests[id].name; });
+    Exporter.download(
+      Exporter.filename(state.report.label, 'csv', state.report.takenAt),
+      Exporter.toCSV(state.report, { batteries: Scoring.BATTERY_LABELS, subtests: subtestNames }),
+      'text/csv'
+    );
+  }
+
+  /**
+   * Print the document form of the report rather than the screen. The app UI is
+   * hidden for the duration, so "Save as PDF" in the print dialog produces the
+   * same page as the HTML export.
+   */
+  function printReport(includeReview) {
+    var area = document.getElementById('print-area');
+    clear(area);
+    area.appendChild(buildReportDocument(includeReview));
+    document.body.classList.add('is-printing');
+
+    var done = function () {
+      document.body.classList.remove('is-printing');
+      clear(area);
+      window.removeEventListener('afterprint', done);
+    };
+    window.addEventListener('afterprint', done);
+    window.print();
+    // Safari and some mobile browsers never fire afterprint.
+    setTimeout(function () { if (document.body.classList.contains('is-printing')) done(); }, 60000);
+  }
+
+  function saveCard() {
+    var includeReview = { value: state.session && state.session.items.length <= 40 };
+
+    var checkbox = h('input', {
+      type: 'checkbox', id: 'inc-review',
+      checked: includeReview.value,
+      onchange: function (e) { includeReview.value = e.target.checked; }
+    });
+
+    return h('div', { class: 'card' }, [
+      h('h2', { text: 'Save this report' }),
+      h('p', { class: 'lede', text: 'Everything is generated in your browser — nothing is uploaded anywhere.' }),
+      h('label', { class: 'checkline', for: 'inc-review' }, [
+        checkbox,
+        h('span', { text: 'Include the answer review — all ' + (state.session ? state.session.items.length : 0) +
+          ' questions with the correct answers and full walkthroughs' })
+      ]),
+      h('div', { class: 'btn-row', style: 'margin-top:14px' }, [
+        h('button', { class: 'btn btn-primary', type: 'button',
+          onclick: function () { printReport(includeReview.value); } }, ['🖨 Print / Save as PDF']),
+        h('button', { class: 'btn', type: 'button',
+          onclick: function () { saveAsHtml(includeReview.value); } }, ['Download HTML']),
+        h('button', { class: 'btn', type: 'button', onclick: saveAsJson }, ['Download JSON']),
+        h('button', { class: 'btn', type: 'button', onclick: saveAsCsv }, ['Download CSV'])
+      ]),
+      h('p', { class: 'lede', style: 'margin:12px 0 0;font-size:.84rem', text:
+        'HTML is a single self-contained file you can email or open on any device. JSON can be loaded back ' +
+        'into this app from the menu to reopen the full report. CSV holds the score tables for a spreadsheet.' })
+    ]);
+  }
+
+  function docStat(value, key, lead) {
+    return h('div', { class: 'doc-stat' + (lead ? ' lead' : '') }, [
+      h('div', { class: 'v', text: String(value) }),
+      h('div', { class: 'k', text: key })
+    ]);
+  }
+
+  function flatten(lists) {
+    return lists.reduce(function (a, b) { return a.concat(b); }, []);
+  }
+
   // ------------------------------------------------------------ explainer ---
+
+  var SCORE_GLOSSARY = [
+    { term: 'Raw score',
+      text: 'Number of questions answered correctly. Omitted questions count as incorrect, as they do on the real test.' },
+    { term: 'Ability estimate',
+      text: 'Every question carries a difficulty value. Rather than simply counting correct answers, the model asks which ability level best explains this exact pattern of hits and misses, using a three-parameter logistic IRT model with a guessing floor of 1 divided by the number of choices. Two students with the same raw score can therefore land in different places: because the model allows for lucky guesses on the hardest questions, missing several easy ones pulls the estimate down further than missing the hardest ones does.' },
+    { term: 'USS — Universal Scale Score',
+      text: 'An emulated cross-grade scale, anchored so that scores from different grades sit on one continuum and growth can be tracked over time.' },
+    { term: 'SAS — Standard Age Score',
+      text: 'The ability estimate expressed on a scale with a mean of 100 and a standard deviation of 16, compared against test-takers of the same age. The ±1 SEM column is the confidence band: a re-test would usually land somewhere inside it, so treat scores inside that range as equivalent.' },
+    { term: 'Age percentile vs. grade percentile',
+      text: 'The age percentile compares the student against others of the same age; the grade percentile compares against others in the same grade. They differ because a student can be young or old for their grade — which is exactly why both appear on a real report.' },
+    { term: 'Stanine',
+      text: 'A 1–9 band derived from the percentile. 4 to 6 is the average range and covers roughly the middle half of all students.' },
+    { term: 'VQN composite',
+      text: 'The average of the three batteries. Because the batteries are correlated, averaging them narrows the spread, so the average is re-standardized before conversion — otherwise every composite would drift towards 100.' },
+    { term: 'Ability profile',
+      text: 'The median stanine plus a letter: A when the three batteries are level, B when one stands apart, C when one is a relative strength and another a relative weakness, and E when the highest and lowest are at least ' + Scoring.EXTREME_SAS_SPREAD + ' SAS points apart. A battery counts as a relative strength or weakness when it sits at least ' + Scoring.SIGNIFICANT_SAS_DIFF + ' SAS points from the student\u2019s own three-battery average.' }
+  ];
+
+  var SCORE_CAVEAT = 'The official CogAT norm tables are proprietary, so this tool re-creates the reporting ' +
+    'pipeline with an open, documented model rather than published norms. The shape of the report matches a ' +
+    'real one; the numbers are an estimate produced by this project. This test is also short — a real CogAT ' +
+    'battery uses many more items, which is what makes its scores stable enough for placement decisions. Use ' +
+    'these results to find topics worth practising, not to predict a real score.';
 
   function scoringExplainer() {
     var d = h('details', { class: 'explain card' });
     d.appendChild(h('summary', { text: 'How these scores are calculated (and what they are not)' }));
     d.appendChild(h('div', {}, [
-      h('p', { text: 'The official CogAT norm tables are proprietary, so this tool re-creates the reporting pipeline with an open, documented model rather than published norms. The shape of the report matches a real one; the numbers are an estimate produced by this project.' }),
-      h('dl', {}, [
-        h('dt', { text: 'Raw score' }),
-        h('dd', { text: 'Number of questions answered correctly. Omitted questions count as incorrect, as they do on the real test.' }),
-
-        h('dt', { text: 'Ability estimate' }),
-        h('dd', { text: 'Every question carries a difficulty value. Rather than simply counting correct answers, the model asks which ability level best explains this exact pattern of hits and misses, using a three-parameter logistic IRT model with a guessing floor of 1 divided by the number of choices. Two students with the same raw score can therefore land in different places: because the model allows for lucky guesses on the hardest questions, missing several easy ones pulls the estimate down further than missing the hardest ones does.' }),
-
-        h('dt', { text: 'USS — Universal Scale Score' }),
-        h('dd', { text: 'An emulated cross-grade scale, anchored so that scores from different grades sit on one continuum and growth can be tracked over time.' }),
-
-        h('dt', { text: 'SAS — Standard Age Score' }),
-        h('dd', { text: 'The ability estimate expressed on a scale with a mean of 100 and a standard deviation of 16, compared against test-takers of the same age. The ±1 SEM column is the confidence band: a re-test would usually land somewhere inside it, so treat scores inside that range as equivalent.' }),
-
-        h('dt', { text: 'Age percentile vs. grade percentile' }),
-        h('dd', { text: 'The age percentile compares the student against others of the same age; the grade percentile compares against others in the same grade. They differ because a student can be young or old for their grade — which is exactly why both appear on a real report.' }),
-
-        h('dt', { text: 'Stanine' }),
-        h('dd', { text: 'A 1–9 band derived from the percentile. 4 to 6 is the average range and covers roughly the middle half of all students.' }),
-
-        h('dt', { text: 'VQN composite' }),
-        h('dd', { text: 'The average of the three batteries. Because the batteries are correlated, averaging them narrows the spread, so the average is re-standardized before conversion — otherwise every composite would drift towards 100.' }),
-
-        h('dt', { text: 'Ability profile' }),
-        h('dd', { text: 'The median stanine plus a letter: A when the three batteries are level, B when one stands apart, C when one is a relative strength and another a relative weakness, and E when the highest and lowest are at least ' + Scoring.EXTREME_SAS_SPREAD + ' SAS points apart. A battery counts as a relative strength or weakness when it sits at least ' + Scoring.SIGNIFICANT_SAS_DIFF + ' SAS points from the student’s own three-battery average.' })
-      ]),
-      h('p', { text: 'This test is short. A real CogAT battery uses many more items, which is what makes its scores stable enough for placement decisions. Use these results to find topics worth practising — not to predict a real score.' })
+      h('p', { text: SCORE_CAVEAT }),
+      h('dl', {}, flatten(SCORE_GLOSSARY.map(function (entry) {
+        return [h('dt', { text: entry.term }), h('dd', { text: entry.text })];
+      })))
     ]));
     return d;
   }
@@ -892,6 +1271,15 @@
   window.addEventListener('beforeunload', function (e) {
     if (state.screen === 'test') { e.preventDefault(); e.returnValue = ''; }
   });
+
+  // The saved-report stylesheet is only ever needed for printing; the HTML
+  // export carries its own copy inline.
+  (function injectPrintStyles() {
+    var style = document.createElement('style');
+    style.media = 'print';
+    style.textContent = Exporter.DOC_CSS;
+    document.head.appendChild(style);
+  })();
 
   renderHome();
 })();

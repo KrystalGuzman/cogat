@@ -18,7 +18,7 @@ No build step, no dependencies at runtime. Open `index.html` in a browser and it
 open index.html          # works straight from the filesystem
 # or, to serve it over HTTP:
 npm run serve            # http://localhost:8080
-npm test                 # 30 unit tests, no dependencies
+npm test                 # 40 unit tests, no dependencies
 ```
 
 Only the test tooling needs Node (18+). The app itself is plain ES5-compatible browser
@@ -53,6 +53,28 @@ descriptions of them.
 
 Keyboard: `A`–`E` or `1`–`5` to answer, arrow keys to move between questions, `Enter` to
 check and advance in practice mode.
+
+## Saving a report
+
+Every score report can be saved four ways, all generated in the browser with nothing uploaded.
+A checkbox decides whether the answer review — every question, the correct answer, and the full
+walkthrough — travels with the report.
+
+| Format | What it is for |
+| --- | --- |
+| **Print / Save as PDF** | Opens the browser print dialog against a paginated document layout, so "Save as PDF" produces a clean report with no app chrome. |
+| **HTML** | One self-contained file. Styles and figures are inlined, so it opens on any device with no server and no network. |
+| **JSON** | The full report plus the questions and answers behind it. **This app can load it back in** to reopen the report, review, and retake. |
+| **CSV** | The score tables as one tidy sheet — a `section` column marks composite, battery and subtest rows. |
+
+Completed tests are also kept in the browser (the most recent 12) and can be reopened from the
+**Saved results** list on the menu. That list is per-browser and per-device; downloading a report is
+what makes it permanent or portable.
+
+The saved document has its own stylesheet (`DOC_CSS` in `src/export.js`) rather than the app's. That
+is deliberate: paper and standalone files want a light-only, chrome-free, paginated design, and a
+page served from `file://` cannot read its own stylesheet at runtime anyway. The *markup* builders
+are shared with the on-screen report, so the content cannot drift — only the presentation differs.
 
 ---
 
@@ -119,15 +141,18 @@ index.html            app shell; loads everything with plain <script> tags
 assets/styles.css     theme-aware styling (light and dark)
 src/scoring.js        IRT ability estimation, scale conversions, ability profile
 src/figures.js        declarative SVG renderer for the nonverbal battery
+src/export.js         saved-report document stylesheet, HTML/JSON/CSV serialization
 src/bank/*.js         item banks, one per battery
 src/app.js            screens, navigation, keyboard handling
 test/scoring.test.js  scoring pipeline
 test/bank.test.js     item-bank integrity
+test/export.test.js   save formats and the JSON round-trip
 scripts/serve.js      static dev server
 ```
 
-`src/scoring.js` and `src/figures.js` are UMD-wrapped, so they load in the browser as globals and
-in Node with `require` — which is how the tests exercise the real item bank rather than fixtures.
+`src/scoring.js`, `src/figures.js` and `src/export.js` are UMD-wrapped, so they load in the browser
+as globals and in Node with `require` — which is how the tests exercise the real item bank rather
+than fixtures.
 
 ## Adding questions
 
@@ -150,3 +175,7 @@ Add an object to the relevant file in `src/bank/`:
 difficulty in range, a hint, a multi-step walkthrough, distractor notes that point at real wrong
 choices, and enough difficulty spread within each subtest. Nonverbal items are additionally checked
 for renderable figure specs and, for paper folding, a hole count consistent with the number of folds.
+
+The export tests cover the save formats directly, including a round-trip that re-scores a JSON
+export against the real item bank and asserts it reproduces the original composite, raw score and
+ability profile.
