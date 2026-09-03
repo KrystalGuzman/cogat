@@ -62,7 +62,11 @@
       levelId: level.id,
       formId: plan.form.id,
       paced: plan.form.paced,
+      // Primary levels are orally administered by design.
       readAloud: !!plan.form.readAloud,
+      // Upper levels only: an opt-in accommodation that changes what the Verbal
+      // battery measures, so it is recorded and surfaced on the report.
+      accommodateReadAloud: false,
       batteries: sessions.map(function (s) { return s.battery; }),
       sessionIndex: 0,
       sectionIndex: 0,

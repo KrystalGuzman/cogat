@@ -495,3 +495,12 @@ details.explain dd { margin: 2px 0 0; }
 
 /* A tag used as a standalone block must not stretch to the card width. */
 div.tag { display: inline-block; margin-bottom: 10px; }
+
+/* Read-aloud accommodation, offered only above the primary levels. */
+.accommodation {
+  margin: 14px 0; padding: 12px 15px; border-radius: 9px;
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+}
+.accommodation-note {
+  margin: 8px 0 0; font-size: .85rem; color: var(--text-dim); line-height: 1.5;
+}

@@ -121,6 +121,7 @@
     '.cogat-doc .fig-line { stroke: var(--ink); fill: none; }',
     '.cogat-doc .fig-dashed { stroke-dasharray: 5 4; stroke: var(--dim); }',
 
+    '.cogat-doc .doc-flag { padding: 9px 12px; border-radius: 6px; border: 1px solid var(--accent); background: #eef3fd; font-size: 11.5px; }',
     '.cogat-doc .doc-foot { margin-top: 26px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--dim); font-size: 10.5px; }',
     '.cogat-doc .page-break { page-break-before: always; break-before: page; }',
     '@media print { .cogat-doc { padding: 0; max-width: none; } }'
@@ -229,6 +230,7 @@
       formId: payload.formId != null ? payload.formId : (r.form || null),
       learner: { grade: payload.grade, ageMonths: payload.ageMonths },
       timedOut: !!r.timedOut,
+      accommodatedReadAloud: !!r.accommodatedReadAloud,
       elapsedSec: r.elapsedSec != null ? Math.round(r.elapsedSec) : null,
       // Per-subtest timing, so a reader can see where the clock ran out.
       sectionLog: payload.sectionLog || r.sectionLog || null,

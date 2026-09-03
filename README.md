@@ -18,7 +18,7 @@ No build step, no runtime dependencies. Open `index.html` in a browser and it ru
 ```bash
 open index.html          # works straight from the filesystem
 npm run serve            # or over HTTP at localhost:8080
-npm test                 # 73 unit tests, no dependencies
+npm test                 # 83 unit tests, no dependencies
 ```
 
 Only the tests need Node (18+). The app is plain browser JavaScript loaded with `<script>` tags, so
@@ -67,10 +67,33 @@ three sessions, one per battery, normally taken on different days
 - **Sessions can be spread over days.** Progress is saved on the device and can be resumed. A
   section interrupted mid-clock restarts at its directions, because a timer cannot be resumed
   honestly.
-- **Primary levels are teacher-paced and read aloud.** Every primary item carries the examiner
-  script, shown on screen and spoken aloud where the browser supports it.
+- **Primary levels are teacher-paced and read aloud.** See below.
 
 Keyboard: `A`–`E` or `1`–`5` to answer, arrow keys to move within a section.
+
+### Reading aloud
+
+"Verbal" in CogAT means reasoning *with words*; it does not mean the test is spoken. Oral
+administration is a separate axis, and it splits by level:
+
+| | Directions | Questions |
+| --- | --- | --- |
+| **Primary (K–2)** | read aloud | **read aloud** — the children are not yet readers |
+| **Upper (3–12)** | read aloud | read independently by the student |
+
+So the primary levels are unusable without speech: a written sentence-completion item is not a test
+of reasoning for someone who cannot read the sentence, and neither are its written answer choices.
+Every primary item is therefore spoken in full, choices included, with the script also shown on
+screen so nothing depends on the audio working.
+
+On the upper levels, reading the items aloud would change what is being measured — verbal reasoning
+through reading becomes listening comprehension. It is offered there only as an explicit
+**accommodation**, off by default, and using it is recorded and printed on the score report.
+
+Scripts are **derived from each item** by `src/speech.js` rather than stored beside it, so they
+cannot drift out of sync with the question. Symbols are spoken the way an examiner says them
+(`? + 3 = 8` → "blank plus 3 equals 8"), and unlabelled abstract shapes are deliberately never read
+out, since naming them would give the answer away.
 
 There is also a separate **practice mode** — untimed, never scored, one subtest at a time, with
 hints and full walkthroughs, drawing questions at the student's own level.
@@ -173,6 +196,7 @@ src/scoring.js                 IRT estimation, scale conversions, SEM-based abil
 src/admin.js                   administration state machine and progress persistence
 src/figures.js                 declarative SVG renderer for the nonverbal battery
 src/pictograms.js              46 object drawings for the primary picture battery
+src/speech.js                  derives the examiner script for any item
 src/export.js                  saved-report stylesheet and HTML/JSON/CSV serialization
 src/app.js                     screens, navigation, keyboard, read-aloud
 src/bank/generators.js         quantitative item factories
@@ -180,7 +204,7 @@ src/bank/generators-figural.js nonverbal item factories, including fold geometry
 src/bank/verbal.js             hand-authored verbal pools (upper levels)
 src/bank/primary.js            hand-authored picture pools (primary levels)
 src/bank/index.js              assembles the pools, describes the eleven subtests
-test/                          73 tests across levels, scoring, bank, admin, export, simulation
+test/                          83 tests across levels, scoring, bank, admin, speech, export, simulation
 scripts/serve.js               static dev server
 ```
 

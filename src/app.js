@@ -17,6 +17,7 @@
   var Admin = window.CogatAdmin;
   var Figures = window.Figures;
   var Exporter = window.CogatExport;
+  var Speech = window.CogatSpeech;
   var PHASE = Admin.PHASE;
 
   var LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -43,7 +44,8 @@
     drill: null,         // untimed subtest practice
     report: null,
     session: null,       // the scored session behind the current report
-    readAloud: false
+    readAloud: false,           // speak each question automatically
+    accommodateReadAloud: false // upper levels only; changes what is measured
   };
 
   var tickHandle = null;
@@ -147,15 +149,34 @@
     if (speechAvailable) { try { window.speechSynthesis.cancel(); } catch (e) { /* ignore */ } }
   }
 
+  /**
+   * Is this item meant to be spoken? Always on the primary levels, which are
+   * orally administered; on the upper levels only when the read-aloud
+   * accommodation has been switched on.
+   */
+  function speechEnabled() {
+    if (state.test) return state.test.readAloud || state.test.accommodateReadAloud;
+    var level = Levels.levelForGrade(state.profile.grade);
+    return Levels.formForLevel(level).readAloud || state.accommodateReadAloud;
+  }
+
   function readAloudBar(item) {
-    if (!item.readAloud) return null;
+    if (!speechEnabled()) return null;
+    var script = Speech.scriptFor(item);
+    if (!script) return null;
     return h('div', { class: 'readaloud' }, [
       h('button', {
         class: 'btn btn-quiet', type: 'button', title: 'Read this question aloud',
-        onclick: function () { speak(item.readAloud); }
+        onclick: function () { speak(script); }
       }, [speechAvailable ? '🔊 Read aloud' : '🔊']),
-      h('span', { class: 'readaloud-text', text: item.readAloud })
+      h('span', { class: 'readaloud-text', text: script })
     ]);
+  }
+
+  function speakItem(item) {
+    if (!state.readAloud || !speechEnabled()) return;
+    var script = Speech.scriptFor(item);
+    if (script) speak(script);
   }
 
   // ---------------------------------------------------------- item lookup ---
@@ -524,9 +545,33 @@
             ? 'Each question is read aloud. Work through the session in one sitting if you can; your progress is saved either way.'
             : 'Each subtest is timed separately and closes when you submit it. You cannot return to a subtest once it is finished, and time left over in one subtest does not carry to the next.')
         ]),
-        t.readAloud && speechAvailable ? h('label', { class: 'checkline' }, [
-          h('input', { type: 'checkbox', checked: state.readAloud, onchange: function (e) { state.readAloud = e.target.checked; } }),
+        speechAvailable && t.readAloud ? h('label', { class: 'checkline' }, [
+          h('input', { type: 'checkbox', checked: state.readAloud,
+            onchange: function (e) { state.readAloud = e.target.checked; } }),
           h('span', { text: 'Read each question aloud automatically' })
+        ]) : null,
+        speechAvailable && !t.readAloud ? h('div', { class: 'accommodation' }, [
+          h('label', { class: 'checkline' }, [
+            h('input', {
+              type: 'checkbox', checked: t.accommodateReadAloud,
+              onchange: function (e) {
+                t.accommodateReadAloud = e.target.checked;
+                if (!e.target.checked) state.readAloud = false;
+                Admin.save(t);
+                renderTest();
+              }
+            }),
+            h('span', { text: 'Read questions aloud (accommodation)' })
+          ]),
+          h('p', { class: 'accommodation-note', text:
+            'From Level 9 upward the student reads the questions themselves; only the directions are read aloud. ' +
+            'Switching this on changes what the Verbal battery measures — reasoning through reading becomes listening ' +
+            'comprehension — so the score report will record that it was used.' }),
+          t.accommodateReadAloud ? h('label', { class: 'checkline', style: 'margin-top:8px' }, [
+            h('input', { type: 'checkbox', checked: state.readAloud,
+              onchange: function (e) { state.readAloud = e.target.checked; } }),
+            h('span', { text: 'Also read each question aloud automatically, without pressing the button' })
+          ]) : null
         ]) : null,
         h('div', { class: 'btn-row', style: 'margin-top:16px' }, [
           h('button', { class: 'btn btn-primary btn-big', type: 'button', onclick: function () {
@@ -551,6 +596,10 @@
         h('div', { class: 'tag', text: 'Subtest ' + (t.sectionIndex + 1) + ' of ' + Admin.currentSession(t).sections.length }),
         h('h1', { text: meta.name }),
         h('p', { class: 'directions-big', text: meta.directions }),
+        speechAvailable ? h('div', { class: 'btn-row', style: 'margin-bottom:14px' }, [
+          h('button', { class: 'btn btn-quiet', type: 'button',
+            onclick: function () { speak(Speech.directionsScript(meta)); } }, ['🔊 Read the directions aloud'])
+        ]) : null,
         h('div', { class: 'strategy' }, [
           h('h3', { text: 'How this subtest works' }),
           h('ul', {}, meta.strategy.map(function (line) { return h('li', { text: line }); }))
@@ -583,7 +632,7 @@
     var selected = t.practiceAnswers[item.id];
     var checked = t.practiceChecked === item.id;
 
-    if (state.readAloud && item.readAloud && !checked) speak(item.readAloud);
+    if (!checked) speakItem(item);
 
     var body = [
       h('div', { class: 'tag ok', text: 'Practice question ' + (t.practiceIndex + 1) + ' of ' + section.practice.length + ' — not scored' }),
@@ -663,7 +712,7 @@
     var item = section.items[t.itemIndex];
     var selected = t.answers[item.id] === undefined ? null : t.answers[item.id];
 
-    if (state.readAloud && item.readAloud) speak(item.readAloud);
+    speakItem(item);
 
     var answeredCount = section.items.filter(function (i) { return t.answers[i.id] !== undefined; }).length;
 
@@ -835,6 +884,8 @@
     });
     state.report.label = state.session.label;
     state.report.sectionLog = t.sectionLog;
+    state.report.readAloudUsed = !!t.readAloud;
+    state.report.accommodatedReadAloud = !!t.accommodateReadAloud;
     state.report.takenAt = t.startedAt;
     state.report.elapsedSec = Object.keys(t.sectionLog).reduce(function (n, k) {
       return n + (t.sectionLog[k].elapsedSec || 0);
@@ -854,7 +905,8 @@
       ageMonths: t.ageMonths,
       itemIds: items.map(function (i) { return i.id; }),
       answers: t.answers,
-      sectionLog: t.sectionLog
+      sectionLog: t.sectionLog,
+      accommodatedReadAloud: !!t.accommodateReadAloud
     });
 
     Admin.clearSaved();
@@ -908,6 +960,7 @@
     state.report.sectionLog = saved.sectionLog || null;
     state.report.reopened = true;
     state.report.missingItems = missing;
+    state.report.accommodatedReadAloud = !!saved.accommodatedReadAloud;
 
     stopTimer();
     timerEl.hidden = true;
@@ -961,6 +1014,12 @@
           comp ? stat(Scoring.interpretSAS(comp.sas), 'Band') : null
         ])
       ]),
+      r.accommodatedReadAloud ? h('div', { class: 'notice warn' }, [
+        h('strong', { text: 'Read-aloud accommodation used. ' }),
+        document.createTextNode('The questions were read aloud, which this level does not normally do. ' +
+          'On the Verbal battery that changes what is measured — reasoning through reading becomes listening ' +
+          'comprehension — so the Verbal score in particular is not comparable to a standard administration.')
+      ]) : null,
       r.reopened ? h('p', { class: 'lede', text: 'Reopened from a saved report.' +
         (r.missingItems && r.missingItems.length
           ? ' ' + r.missingItems.length + ' question(s) are no longer in the question bank and were left out, so these scores may differ slightly from the original.' : '') }) : null
@@ -1298,6 +1357,15 @@
         r.elapsedSec >= 60 ? h('span', { text: 'Testing time ' + fmtMinutes(r.elapsedSec) }) : null
       ])
     ]));
+
+    if (r.accommodatedReadAloud) {
+      doc.appendChild(h('div', { class: 'doc-section' }, [
+        h('p', { class: 'doc-flag', text:
+          'Read-aloud accommodation used. The questions were read aloud, which this level does not normally do. ' +
+          'On the Verbal battery that changes what is measured, so the Verbal score is not comparable to a ' +
+          'standard administration.' })
+      ]));
+    }
 
     var summary = h('div', { class: 'doc-summary' });
     if (comp) summary.appendChild(docStat(comp.sas, (comp.batteriesIncluded === 3 ? 'VQN composite' : 'Composite') + ' SAS', true));
