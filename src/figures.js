@@ -119,6 +119,13 @@
     dot: function (s) {
       return el('circle', { cx: s.x, cy: s.y, r: s.s != null ? s.s / 2 : 5 });
     },
+    // Free-form outline, used by the pictograms in the primary picture battery.
+    path: function (s) {
+      return el('path', { d: s.d });
+    },
+    polyline: function (s) {
+      return el('polyline', { points: s.points });
+    },
     // Right triangle — the half-sheet left behind by a diagonal paper fold.
     rtri: function (s) {
       var w = s.w != null ? s.w : s.s;
@@ -163,7 +170,7 @@
 
     var outline = builder(s);
     outline.setAttribute('class', 'fig-shape fig-fill-' + (s.fill === 'half' ? 'none' : s.fill));
-    if (s.t === 'line') outline.setAttribute('class', 'fig-shape fig-line' + (s.dash ? ' fig-dashed' : ''));
+    if (s.t === 'line' || s.t === 'polyline') outline.setAttribute('class', 'fig-shape fig-line' + (s.dash ? ' fig-dashed' : ''));
     if (s.t === 'dot') outline.setAttribute('class', 'fig-shape fig-fill-solid');
     group.appendChild(outline);
 

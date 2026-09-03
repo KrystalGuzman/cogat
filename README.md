@@ -1,14 +1,15 @@
-# CogAT Practice &amp; Score Evaluator
+# CogAT Practice Test &amp; Score Evaluator
 
-A self-contained practice test modelled on the **Cognitive Abilities Test (CogAT)**, with a
-full score report and a worked walkthrough for every question.
+A leveled cognitive abilities practice test modelled on the **Cognitive Abilities Test (CogAT)**,
+administered the way the real one is, with a full score report and a worked walkthrough for every
+question.
 
-No build step, no dependencies at runtime. Open `index.html` in a browser and it runs.
+No build step, no runtime dependencies. Open `index.html` in a browser and it runs.
 
 > **Not an official test.** CogAT&reg; is a registered trademark of its publisher. This project is
-> independent and unaffiliated. The official norm tables are proprietary, so the scores here are
-> produced by an open, documented model — good for finding what to practise, not for predicting a
-> real score or making placement decisions.
+> independent and unaffiliated. The official norm tables are proprietary, so the scores here come
+> from an open, documented model — good for finding what to practise, not for predicting a real
+> score or making placement decisions.
 
 ---
 
@@ -16,166 +17,209 @@ No build step, no dependencies at runtime. Open `index.html` in a browser and it
 
 ```bash
 open index.html          # works straight from the filesystem
-# or, to serve it over HTTP:
-npm run serve            # http://localhost:8080
-npm test                 # 40 unit tests, no dependencies
+npm run serve            # or over HTTP at localhost:8080
+npm test                 # 73 unit tests, no dependencies
 ```
 
-Only the test tooling needs Node (18+). The app itself is plain ES5-compatible browser
-JavaScript loaded with `<script>` tags, so `file://` works with no CORS problems.
+Only the tests need Node (18+). The app is plain browser JavaScript loaded with `<script>` tags, so
+`file://` works with no CORS problems.
 
 ---
 
-## What it covers
+## It is a leveled test, not one test
 
-Nine subtests across the three classic batteries — 71 questions in total.
+CogAT is a series of leveled forms assigned by age and grade. A student is given the level for their
+age, and **the levels differ in the questions themselves**, not merely in how the answers are scored.
+This project reproduces that.
 
-| Battery | Subtests |
-| --- | --- |
-| **Verbal** | Verbal Analogies · Sentence Completion · Verbal Classification |
-| **Quantitative** | Number Analogies · Number Puzzles · Number Series |
-| **Nonverbal** | Figure Matrices · Figure Classification · Paper Folding |
+| Level | Grade | Form | Administration |
+| --- | --- | --- | --- |
+| 5/6, 7, 8 | K–2 | **Primary** — Picture Analogies, Sentence Completion, Picture Classification | Picture-based, read aloud, teacher-paced |
+| 9, 10, 11, 12 | 3–6 | **Upper** — Verbal Analogies, Sentence Completion, Verbal Classification | Print, read independently, separately timed |
+| 13/14, 15/16, 17/18 | 7–12 | Upper | Print, separately timed |
 
-The nonverbal items are drawn as real SVG figures from a small declarative shape language, so
-matrices, classifications and paper-folding diagrams are genuine visual problems rather than
-descriptions of them.
+Both forms share the Quantitative battery (Number Analogies, Number Puzzles, Number Series) and the
+Nonverbal battery (Figure Matrices, Paper Folding, Figure Classification).
 
-## Modes
+A primary form runs to **118 scored questions** and an upper form to **176**, matching the published
+shape of Form 7/8. Every one of the ten levels assembles a complete form from a shared pool of
+**566 scored items**, selected and ordered by difficulty around that level's target ability.
+Adjacent levels overlap heavily and distant ones barely at all, which is how leveled forms are
+actually built.
 
-- **Full practice test** — all nine subtests, timed, scored end to end. Produces the complete
-  report: battery scores, the VQN composite, and an ability profile.
-- **Single battery** — the same, scoped to Verbal, Quantitative or Nonverbal.
-- **Practice one subtest** — untimed. Strategy notes up front, a hint on request, then immediate
-  feedback with the full step-by-step solution and an explanation of why your particular wrong
-  answer was wrong.
-- **Answer review** — after a test, every question again with the right answer marked, your answer
-  marked, and the walkthrough.
+## Administered the way CogAT is
 
-Keyboard: `A`–`E` or `1`–`5` to answer, arrow keys to move between questions, `Enter` to
-check and advance in practice mode.
+The test is not one long question list:
 
-## Saving a report
+```
+three sessions, one per battery, normally taken on different days
+  └─ three subtests per session, each running
+       directions (untimed)
+       → worked practice questions (untimed, never scored)
+       → the scored section under its own strict time limit
+```
 
-Every score report can be saved four ways, all generated in the browser with nothing uploaded.
-A checkbox decides whether the answer review — every question, the correct answer, and the full
-walkthrough — travels with the report.
+- **Section locking.** Once a subtest is submitted it is closed. There is no route back, and time
+  left over in one subtest cannot be spent on another.
+- **Per-subtest timing.** Each upper-level subtest gets its own 10-minute clock. Running out closes
+  the section and is recorded on the report.
+- **Free movement inside a section**, as within a page of the real booklet.
+- **Sessions can be spread over days.** Progress is saved on the device and can be resumed. A
+  section interrupted mid-clock restarts at its directions, because a timer cannot be resumed
+  honestly.
+- **Primary levels are teacher-paced and read aloud.** Every primary item carries the examiner
+  script, shown on screen and spoken aloud where the browser supports it.
 
-| Format | What it is for |
-| --- | --- |
-| **Print / Save as PDF** | Opens the browser print dialog against a paginated document layout, so "Save as PDF" produces a clean report with no app chrome. |
-| **HTML** | One self-contained file. Styles and figures are inlined, so it opens on any device with no server and no network. |
-| **JSON** | The full report plus the questions and answers behind it. **This app can load it back in** to reopen the report, review, and retake. |
-| **CSV** | The score tables as one tidy sheet — a `section` column marks composite, battery and subtest rows. |
+Keyboard: `A`–`E` or `1`–`5` to answer, arrow keys to move within a section.
 
-Completed tests are also kept in the browser (the most recent 12) and can be reopened from the
-**Saved results** list on the menu. That list is per-browser and per-device; downloading a report is
-what makes it permanent or portable.
-
-The saved document has its own stylesheet (`DOC_CSS` in `src/export.js`) rather than the app's. That
-is deliberate: paper and standalone files want a light-only, chrome-free, paginated design, and a
-page served from `file://` cannot read its own stylesheet at runtime anyway. The *markup* builders
-are shared with the on-screen report, so the content cannot drift — only the presentation differs.
+There is also a separate **practice mode** — untimed, never scored, one subtest at a time, with
+hints and full walkthroughs, drawing questions at the student's own level.
 
 ---
 
 ## How the score evaluator works
 
-The report mirrors the structure of a real CogAT report. Each step is implemented in
-[`src/scoring.js`](src/scoring.js) and covered by tests.
+Implemented in [`src/scoring.js`](src/scoring.js) and covered by tests.
 
-**1. Ability estimate.** Rather than counting correct answers, the model asks which ability level
-best explains this exact pattern of hits and misses. Every item carries a difficulty `b` on the
-grade-normative scale, where ability is standard normal for the target grade. Responses are fitted
-with a three-parameter logistic model,
+**1. One absolute ability scale.** A leveled test only coheres if an item has one fixed difficulty
+and the *norm group* moves with the student. Item difficulties live in logits on a single scale
+shared by every level; a grade or an age supplies a mean and standard deviation on that same scale.
+A second grader and a tenth grader answering the same item are therefore compared against different
+peers — which is exactly what a leveled, age-normed test does.
+
+**2. Ability estimate.** Responses are fitted with a three-parameter logistic model,
 
 ```
 P(correct | θ) = c + (1 − c) / (1 + e^(−a(θ − b)))
 ```
 
-with a guessing floor of `c = 1 / (number of choices)`, and θ is estimated by EAP over a
-quadrature grid. Omitted items score as incorrect, matching the real test's number-right scoring.
-
-One consequence worth knowing: because the model allows for lucky guesses on the hardest
-questions, two students with the same raw score can land in different places, and missing several
-*easy* questions pulls the estimate down further than missing the hardest ones does.
-
-**2. Age vs. grade norms.** A student who is old for their grade is compared against older peers,
-so the same performance yields a slightly lower age-based score. The model applies roughly 0.12 SD
-of ability per year of age difference from the grade median, which is what makes the age percentile
-and the grade percentile diverge — exactly as they do on a real report.
+with a guessing floor of `c = 1 / (number of choices)`, estimated by EAP over a quadrature grid with
+the age norm group as the prior. Omitted items score as incorrect, matching number-right scoring.
 
 **3. Scales.**
 
 | Score | Meaning |
 | --- | --- |
 | **Raw** | Number correct. |
-| **USS** | Universal Scale Score — an emulated cross-grade scale so scores from different grades sit on one continuum. |
-| **SAS** | Standard Age Score, mean 100 / SD 16, reported with a ±1 SEM confidence band. |
-| **APR / GPR** | Age and grade percentile ranks. |
+| **USS** | Universal Scale Score — the absolute ability on one cross-grade scale, so growth can be tracked year to year. |
+| **SAS** | Standard Age Score, mean 100 / SD 16 against same-age peers, reported with a ±1 SEM band. |
+| **APR / GPR** | Age and grade percentile ranks. They differ when a student is young or old for their grade, because the age norm interpolates the same growth curve at a different point. |
 | **Stanine** | 1–9, from the standard percentile cuts (4, 11, 23, 40, 60, 77, 89, 96). |
 
-**4. VQN composite.** The three batteries are correlated (r ≈ 0.66 is typical), so averaging them
-narrows the spread. The mean is re-standardized by `√((1 + (k−1)r) / k)` before conversion —
-without that step every composite would drift toward 100.
+**4. VQN composite.** Averaging three correlated batteries narrows the spread, so the mean is
+re-standardized by `√((1 + (k−1)r) / k)` with r ≈ 0.66 before conversion — without that step every
+composite would drift toward 100.
 
-**5. Ability profile.** A median stanine plus a pattern letter:
+**5. Ability profile.** A median stanine plus a pattern letter: **A** level, **B** one battery
+apart, **C** a strength *and* a weakness, **E** an extreme spread of 24+ SAS points.
 
-| Letter | Meaning |
+A battery is only marked when its distance from the student's own three-battery average exceeds the
+**measurement error of that distance** — with three batteries, the deviation of one from the mean of
+all three has error variance `(4Vᵢ + Vⱼ + Vₖ)/9`. The report also states the smallest gap it could
+have detected at all.
+
+The confidence threshold is a deliberate trade-off, measured by simulating 3,000 students per
+condition on the Level 9 form:
+
+| z | level student correctly called "A" | true 1-SD difference detected |
+| --- | --- | --- |
+| 1.28 | 64% | 87% |
+| 1.645 | 81% | 74% |
+| **1.96 (chosen)** | **91%** | **61%** |
+| 2.24 | 96% | 48% |
+
+1.96 is chosen because reporting a strength that is not there sends a family chasing a phantom,
+which is worse than staying quiet about a real one the subtest breakdown will still hint at.
+`test/profile-simulation.test.js` measures these rates and fails if they drift.
+
+### What the numbers are worth
+
+At full form length the battery SEM is roughly **±5.6 to ±7.5 SAS points**, against about ±4–5 for
+the real test. A perfect score reaches SAS 159 and the top of the range still separates students
+rather than flattening against a ceiling. Individual subtests remain too short for a scaled score of
+their own and are reported only as a map of where misses clustered.
+
+---
+
+## Saving a report
+
+Every report can be saved four ways, all generated in the browser with nothing uploaded. A checkbox
+decides whether the answer review travels with it.
+
+| Format | What it is for |
 | --- | --- |
-| **A** | All three batteries at about the same level. |
-| **B** | One battery stands apart — a relative strength (`V+`) or weakness (`Q−`). |
-| **C** | A contrast: at least one strength *and* one weakness. |
-| **E** | An extreme difference — 24 or more SAS points between highest and lowest. |
+| **Print / Save as PDF** | A paginated document layout with no app chrome. |
+| **HTML** | One self-contained file — styles and figures inlined, opens anywhere with no server. |
+| **JSON** | The full report plus the level, the questions and the answers. **Loads back into this app** to reopen, review and retake. |
+| **CSV** | The score tables as one tidy sheet, with a `section` column marking composite, battery and subtest rows. |
 
-A battery counts as a relative strength or weakness when it sits at least 8 SAS points from the
-student's own three-battery average. Both thresholds approximate the confidence-band rules behind
-real profile narratives. So `5E (V+ N−)` means: median stanine 5, an extreme spread, verbal a
-relative strength, nonverbal a relative weakness.
+Completed tests are also kept in the browser (the most recent 12) and reopen from the **Saved
+results** list. That list is per-device; downloading is what makes a report permanent or portable.
+
+The saved document has its own stylesheet (`DOC_CSS` in `src/export.js`) rather than the app's. That
+is deliberate: paper wants a light-only, chrome-free, paginated design, and a page served from
+`file://` cannot read its own stylesheet at runtime. The *markup builders* are shared with the
+on-screen report, so content cannot drift — only presentation differs.
 
 ---
 
 ## Layout
 
 ```
-index.html            app shell; loads everything with plain <script> tags
-assets/styles.css     theme-aware styling (light and dark)
-src/scoring.js        IRT ability estimation, scale conversions, ability profile
-src/figures.js        declarative SVG renderer for the nonverbal battery
-src/export.js         saved-report document stylesheet, HTML/JSON/CSV serialization
-src/bank/*.js         item banks, one per battery
-src/app.js            screens, navigation, keyboard handling
-test/scoring.test.js  scoring pipeline
-test/bank.test.js     item-bank integrity
-test/export.test.js   save formats and the JSON round-trip
-scripts/serve.js      static dev server
+index.html                     app shell
+assets/styles.css              theme-aware styling (light and dark)
+src/levels.js                  levels, grade→level mapping, form composition, test assembly
+src/scoring.js                 IRT estimation, scale conversions, SEM-based ability profile
+src/admin.js                   administration state machine and progress persistence
+src/figures.js                 declarative SVG renderer for the nonverbal battery
+src/pictograms.js              46 object drawings for the primary picture battery
+src/export.js                  saved-report stylesheet and HTML/JSON/CSV serialization
+src/app.js                     screens, navigation, keyboard, read-aloud
+src/bank/generators.js         quantitative item factories
+src/bank/generators-figural.js nonverbal item factories, including fold geometry
+src/bank/verbal.js             hand-authored verbal pools (upper levels)
+src/bank/primary.js            hand-authored picture pools (primary levels)
+src/bank/index.js              assembles the pools, describes the eleven subtests
+test/                          73 tests across levels, scoring, bank, admin, export, simulation
+scripts/serve.js               static dev server
 ```
 
-`src/scoring.js`, `src/figures.js` and `src/export.js` are UMD-wrapped, so they load in the browser
-as globals and in Node with `require` — which is how the tests exercise the real item bank rather
-than fixtures.
+Every module is UMD-wrapped, so it loads in the browser as a global and in Node with `require` —
+which is how the tests exercise the real item bank rather than fixtures.
 
-## Adding questions
+### Where items come from
+
+The **quantitative and nonverbal** pools are generated by parameterized factories. These items are
+systematic by nature — a number series really is "a rule applied to a sequence" — so the rule that
+generates the question also derives its walkthrough and its per-distractor rationale. Paper folding
+is computed rather than hand-placed: folds are reflections about creases whose positions are derived
+from the region being folded, and unfolding applies them in reverse with duplicates merged, so a
+punch landing on a crease yields a single hole as a consequence of the geometry rather than a
+special case.
+
+The **verbal and picture** pools are hand-authored, because analogies and sentence completion turn
+on meaning, which does not come from a formula.
+
+### Adding questions
 
 Add an object to the relevant file in `src/bank/`:
 
 ```js
 {
-  id: 'va-09', battery: 'verbal', subtest: 'verbal-analogies',
-  b: 0.4,                                     // difficulty, roughly −2 (easy) to +2 (hard)
+  id: 'va-49', battery: 'verbal', subtest: 'verbal-analogies',
+  b: 0.4,                                     // absolute difficulty in logits: −3.5 (easy) to +2.5
   stem: { kind: 'analogy', pairs: [['cub', 'bear'], ['puppy', '?']] },
   choices: ['kennel', 'dog', 'kitten', 'bark', 'tail'],
-  answer: 1,                                  // index into choices
+  answer: 1,
   hint: 'A nudge that does not give it away.',
   walkthrough: [{ title: 'Name the relationship', text: '…' }, …],
   why: { 0: 'Why this distractor is tempting but wrong.', … }
 }
 ```
 
-`npm test` enforces the invariants: unique ids, a valid answer index, at least four choices, a
-difficulty in range, a hint, a multi-step walkthrough, distractor notes that point at real wrong
-choices, and enough difficulty spread within each subtest. Nonverbal items are additionally checked
-for renderable figure specs and, for paper folding, a hole count consistent with the number of folds.
-
-The export tests cover the save formats directly, including a round-trip that re-scores a JSON
-export against the real item bank and asserts it reproduces the original composite, raw score and
-ability profile.
+`npm test` enforces the invariants: unique ids, a valid answer index, at least four distinct
+choices, a difficulty in range, a hint, a multi-step walkthrough, distractor notes that point at real
+wrong choices, at least two practice items per subtest, and pools that span enough difficulty to
+serve every level they appear on. Nonverbal items are additionally checked for renderable figure
+specs and fold-consistent hole counts; picture items for real pictograms, an examiner script, and an
+answer that does not merely repeat a picture from its own stem.

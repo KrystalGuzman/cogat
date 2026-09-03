@@ -223,9 +223,15 @@
       savedAt: new Date().toISOString(),
       takenAt: payload.takenAt ? new Date(payload.takenAt).toISOString() : null,
       label: payload.label,
+      // The level is the test that was actually given, so a report is not
+      // interpretable without it.
+      levelId: payload.levelId != null ? payload.levelId : (r.level || null),
+      formId: payload.formId != null ? payload.formId : (r.form || null),
       learner: { grade: payload.grade, ageMonths: payload.ageMonths },
       timedOut: !!r.timedOut,
       elapsedSec: r.elapsedSec != null ? Math.round(r.elapsedSec) : null,
+      // Per-subtest timing, so a reader can see where the clock ran out.
+      sectionLog: payload.sectionLog || r.sectionLog || null,
       scores: {
         totals: r.totals,
         composite: r.composite ? {
@@ -274,6 +280,9 @@
     }
     if (!data.answers || typeof data.answers !== 'object') {
       return { ok: false, error: 'That report is missing its answers.' };
+    }
+    if (data.levelId && !/^[0-9/]{1,6}$/.test(String(data.levelId))) {
+      return { ok: false, error: 'That report names a level this app does not recognise.' };
     }
     return { ok: true, data: data };
   }

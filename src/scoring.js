@@ -9,22 +9,30 @@
  * Pipeline (mirrors how CogAT reports are built):
  *
  *   raw responses
- *     -> ability estimate (theta) via a 3-parameter-logistic IRT model,
- *        estimated by EAP (expected a posteriori) over a quadrature grid
- *     -> Universal Scale Score (USS), an emulated cross-grade scale
- *     -> Standard Age Score (SAS), normalized to mean 100 / SD 16
- *     -> Age Percentile Rank (APR) and Age Stanine (1-9)
- *     -> VQN composite (average of the three battery scales, re-standardized)
+ *     -> ability estimate (theta) on a single ABSOLUTE cross-level scale, via a
+ *        3-parameter-logistic IRT model estimated by EAP
+ *     -> Universal Scale Score (USS), a linear map of that absolute scale
+ *     -> Standard Age Score (SAS), theta re-expressed against the norm group for
+ *        the student's AGE (mean 100 / SD 16); the grade percentile uses the
+ *        norm group for their GRADE instead
+ *     -> Age Percentile Rank (APR), Grade Percentile Rank (GPR), Age Stanine
+ *     -> VQN composite (average of the three batteries, re-standardized)
  *     -> Ability Profile (median stanine + A/B/C/E pattern letter)
  *
- * Item difficulties (b) in the item bank are expressed on the grade-normative
- * theta scale, where theta ~ N(0, 1) for the target grade. Guessing (c) defaults
- * to 1 / (number of answer choices).
+ * WHY AN ABSOLUTE SCALE. A leveled test only makes sense if a given item has one
+ * fixed difficulty and the *norm group* moves with the student. Item difficulties
+ * (`b`) are therefore in logits on one scale shared by every level, and a grade
+ * or age supplies a mean and SD on that same scale. A second grader and a tenth
+ * grader answering the same item are compared against different peers, which is
+ * exactly what a leveled, age-normed test does.
  */
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CogatScoring = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./levels.js'));
+  } else {
+    root.CogatScoring = factory(root.CogatLevels);
+  }
+})(typeof self !== 'undefined' ? self : this, function (Levels) {
   'use strict';
 
   var SAS_MEAN = 100;
@@ -35,14 +43,31 @@
   // Typical published inter-battery correlation for V / Q / N.
   var BATTERY_R = 0.66;
 
-  // Ability-profile thresholds (approximations of the confidence-band rules
-  // used on real CogAT profile narratives).
-  var SIGNIFICANT_SAS_DIFF = 8;   // relative strength / weakness
-  var EXTREME_SAS_SPREAD = 24;    // "E" profile
+  /*
+   * Ability-profile significance.
+   *
+   * A battery counts as a relative strength or weakness when its distance from
+   * the student's own three-battery average is larger than the measurement error
+   * of that distance. PROFILE_Z sets the confidence required, and the choice is a
+   * real trade-off. Simulating 3,000 students per condition on the Level 9 form
+   * gives:
+   *
+   *     z     level student correctly called "A"   true 1-SD difference detected
+   *     1.28                64%                              87%
+   *     1.645               81%                              74%
+   *     1.96                91%                              61%
+   *     2.24                96%                              48%
+   *
+   * 1.96 is chosen deliberately: reporting a strength or weakness that is not
+   * really there sends a family off chasing a phantom, which is worse than
+   * staying silent about a real one that the subtest breakdown will still hint
+   * at. test/profile-simulation.test.js measures the false-positive rate and
+   * fails if this constant drifts away from that operating point.
+   */
+  var PROFILE_Z = 1.96;
 
-  // Older-in-grade students score a little higher against *grade* norms; age
-  // norms remove that edge. Roughly 0.12 SD of ability per year of age.
-  var AGE_SLOPE_PER_YEAR = 0.12;
+  // An "E" profile additionally requires a gap this wide in SAS points.
+  var EXTREME_SAS_SPREAD = 24;
 
   var BATTERIES = ['verbal', 'quantitative', 'nonverbal'];
 
@@ -74,21 +99,19 @@
     return v < lo ? lo : (v > hi ? hi : v);
   }
 
-  // Quadrature grid for the EAP integral.
+  // Quadrature grid for the EAP integral, wide enough for every level.
   var GRID = (function () {
     var g = [];
-    for (var t = -4; t <= 4.0001; t += 0.05) g.push(Math.round(t * 1000) / 1000);
+    for (var t = -6; t <= 6.0001; t += 0.05) g.push(Math.round(t * 1000) / 1000);
     return g;
   })();
-
-  var GRID_PRIOR_LOG = GRID.map(function (t) { return -0.5 * t * t; });
 
   // ------------------------------------------------------------------ IRT ---
 
   /**
    * 3PL probability of a correct response.
-   * @param {number} theta ability
-   * @param {number} b item difficulty
+   * @param {number} theta ability on the absolute scale
+   * @param {number} b item difficulty on the same scale
    * @param {number} a item discrimination
    * @param {number} c pseudo-guessing lower asymptote
    */
@@ -96,9 +119,18 @@
     if (a == null) a = 1;
     if (c == null) c = 0;
     var z = a * (theta - b);
-    // Guard against overflow for extreme grids.
     var logistic = z >= 0 ? 1 / (1 + Math.exp(-z)) : Math.exp(z) / (1 + Math.exp(z));
     return c + (1 - c) * logistic;
+  }
+
+  /** Fisher information contributed by one 3PL item at a given ability. */
+  function itemInformation(theta, b, a, c) {
+    if (a == null) a = 1;
+    if (c == null) c = 0;
+    var p = clamp(pCorrect(theta, b, a, c), 1e-9, 1 - 1e-9);
+    var num = a * a * Math.pow(p - c, 2) * (1 - p);
+    var den = p * Math.pow(1 - c, 2);
+    return num / den;
   }
 
   function itemParams(item) {
@@ -111,22 +143,24 @@
   }
 
   /**
-   * EAP ability estimate.
-   * @param {Array<{b:number,a:number,c:number,correct:boolean}>} responses
-   * @returns {{theta:number, se:number, n:number, nCorrect:number}|null}
+   * EAP ability estimate on the absolute scale.
+   * @param {Array<{b,a,c,correct}>} responses
+   * @param {{mean:number, sd:number}} [prior] norm group the student belongs to
    */
-  function estimateTheta(responses) {
+  function estimateTheta(responses, prior) {
     if (!responses || !responses.length) return null;
+    var mean = prior && typeof prior.mean === 'number' ? prior.mean : 0;
+    var sd = prior && typeof prior.sd === 'number' ? prior.sd : 1;
 
     var logLik = new Array(GRID.length);
     var i, j, r, p, maxLog = -Infinity;
 
     for (i = 0; i < GRID.length; i++) {
-      var sum = GRID_PRIOR_LOG[i];
+      var z = (GRID[i] - mean) / sd;
+      var sum = -0.5 * z * z;
       for (j = 0; j < responses.length; j++) {
         r = responses[j];
-        p = pCorrect(GRID[i], r.b, r.a, r.c);
-        p = clamp(p, 1e-9, 1 - 1e-9);
+        p = clamp(pCorrect(GRID[i], r.b, r.a, r.c), 1e-9, 1 - 1e-9);
         sum += r.correct ? Math.log(p) : Math.log(1 - p);
       }
       logLik[i] = sum;
@@ -157,20 +191,20 @@
 
   // --------------------------------------------------------------- scales ---
 
-  /** Emulated Universal Scale Score: a cross-grade scale anchored by grade. */
-  function thetaToUSS(theta, grade) {
-    var g = typeof grade === 'number' ? grade : 5;
-    var base = 118 + 5.5 * g;
-    return Math.round(base + 9 * theta);
+  /** Emulated Universal Scale Score: one linear map of the absolute scale. */
+  function thetaToUSS(theta) {
+    return Math.round(150 + 20 * theta);
   }
 
-  function thetaToSAS(theta) {
-    return Math.round(clamp(SAS_MEAN + SAS_SD * theta, SAS_MIN, SAS_MAX));
+  /** Express an absolute ability against a norm group. */
+  function thetaToSAS(theta, norm) {
+    var z = norm ? (theta - norm.mean) / norm.sd : theta;
+    return Math.round(clamp(SAS_MEAN + SAS_SD * z, SAS_MIN, SAS_MAX));
   }
 
-  function thetaToPercentile(theta) {
-    var pct = normCdf(theta) * 100;
-    return clamp(Math.round(pct), 1, 99);
+  function thetaToPercentile(theta, norm) {
+    var z = norm ? (theta - norm.mean) / norm.sd : theta;
+    return clamp(Math.round(normCdf(z) * 100), 1, 99);
   }
 
   var STANINE_CUTS = [4, 11, 23, 40, 60, 77, 89, 96];
@@ -188,28 +222,46 @@
   }
 
   /**
-   * Convert a grade-normative theta to an age-normative theta.
-   * A student older than the grade median is compared against older peers, so
-   * the same performance yields a slightly lower age-based score.
+   * The norm group for an age, by interpolating the same growth curve the grade
+   * norms come from. This is why the age and grade percentiles differ: a student
+   * old for their grade is measured against a higher-ability peer group.
    */
-  function ageAdjust(theta, grade, ageMonths) {
-    if (typeof ageMonths !== 'number' || !isFinite(ageMonths)) return theta;
-    var deltaYears = (ageMonths - medianAgeMonths(grade)) / 12;
-    return theta - AGE_SLOPE_PER_YEAR * deltaYears;
+  function ageNorm(ageMonths) {
+    var means = Levels.GRADE_MEAN;
+    var gradeEquivalent = (ageMonths - 66) / 12;
+    var lo = Math.floor(gradeEquivalent);
+    var frac = gradeEquivalent - lo;
+
+    var mean;
+    if (lo < 0) {
+      // Extrapolate below kindergarten using the first interval's slope.
+      mean = means[0] + gradeEquivalent * (means[1] - means[0]);
+    } else if (lo >= means.length - 1) {
+      var last = means.length - 1;
+      mean = means[last] + (gradeEquivalent - last) * (means[last] - means[last - 1]);
+    } else {
+      mean = means[lo] + frac * (means[lo + 1] - means[lo]);
+    }
+    return { mean: mean, sd: Levels.GRADE_SD, ageMonths: ageMonths };
+  }
+
+  function normsFor(grade, ageMonths) {
+    var gradeN = Levels.gradeNorm(grade);
+    var ageN = typeof ageMonths === 'number' && isFinite(ageMonths)
+      ? ageNorm(ageMonths)
+      : { mean: gradeN.mean, sd: gradeN.sd, ageMonths: medianAgeMonths(grade) };
+    return { grade: gradeN, age: ageN };
   }
 
   // --------------------------------------------------------------- report ---
 
   /**
    * Score one battery.
-   * @param {Array} items items presented (must carry id / b / a / c / answer)
-   * @param {Object} answers map of itemId -> selected choice index
-   * @param {{grade:number, ageMonths:number}} profile
+   * @param {Array} items items presented
+   * @param {Object} answers itemId -> selected choice index
+   * @param {Object} norms from normsFor()
    */
-  function scoreBattery(items, answers, profile) {
-    profile = profile || {};
-    var grade = typeof profile.grade === 'number' ? profile.grade : 5;
-
+  function scoreBattery(items, answers, norms) {
     var responses = [];
     var detail = [];
     var attempted = 0;
@@ -224,43 +276,36 @@
       // Omitted items are scored as incorrect, matching CogAT's number-right scoring.
       responses.push({ b: params.b, a: params.a, c: params.c, correct: !!correct });
       detail.push({
-        id: item.id,
-        subtest: item.subtest,
-        b: params.b,
-        selected: answered ? selected : null,
-        answer: item.answer,
-        correct: !!correct,
-        answered: answered
+        id: item.id, subtest: item.subtest, b: params.b,
+        selected: answered ? selected : null, answer: item.answer,
+        correct: !!correct, answered: answered
       });
     });
 
-    var est = estimateTheta(responses);
+    // The prior is the age norm group: that is the population the score describes.
+    var est = estimateTheta(responses, norms.age);
     if (!est) return null;
 
-    var thetaGrade = est.theta;
-    var thetaAge = ageAdjust(thetaGrade, grade, profile.ageMonths);
-
-    var sas = thetaToSAS(thetaAge);
-    var apr = thetaToPercentile(thetaAge);
-    var gpr = thetaToPercentile(thetaGrade);
+    var theta = est.theta;
+    var sasSe = SAS_SD * est.se / norms.age.sd;
 
     return {
       raw: est.nCorrect,
       possible: responses.length,
       attempted: attempted,
       percentCorrect: responses.length ? Math.round((est.nCorrect / responses.length) * 100) : 0,
-      theta: thetaGrade,
-      thetaAge: thetaAge,
+      theta: theta,
       se: est.se,
-      uss: thetaToUSS(thetaAge, grade),
-      sas: sas,
+      seSAS: sasSe,
+      uss: thetaToUSS(theta),
+      sas: thetaToSAS(theta, norms.age),
       sasBand: [
-        thetaToSAS(thetaAge - est.se),
-        thetaToSAS(thetaAge + est.se)
+        thetaToSAS(theta - est.se, norms.age),
+        thetaToSAS(theta + est.se, norms.age)
       ],
-      apr: apr,
-      gpr: gpr,
-      stanine: percentileToStanine(apr),
+      apr: thetaToPercentile(theta, norms.age),
+      gpr: thetaToPercentile(theta, norms.grade),
+      stanine: percentileToStanine(thetaToPercentile(theta, norms.age)),
       detail: detail
     };
   }
@@ -270,26 +315,28 @@
    * spread, so the mean is re-standardized before conversion — otherwise the
    * composite would systematically look closer to 100 than it should.
    */
-  function composite(batteryResults, grade) {
+  function composite(batteryResults, norms) {
     var thetas = [];
     Object.keys(batteryResults).forEach(function (key) {
       var r = batteryResults[key];
-      if (r) thetas.push(r.thetaAge);
+      if (r) thetas.push(r.theta);
     });
     if (!thetas.length) return null;
 
     var k = thetas.length;
     var mean = thetas.reduce(function (a, b) { return a + b; }, 0) / k;
     var sdOfMean = Math.sqrt((1 + (k - 1) * BATTERY_R) / k);
-    var z = mean / sdOfMean;
+    var effectiveNorm = { mean: norms.age.mean, sd: norms.age.sd * sdOfMean };
+    var gradeNormEff = { mean: norms.grade.mean, sd: norms.grade.sd * sdOfMean };
 
     return {
       batteriesIncluded: k,
-      theta: z,
-      uss: thetaToUSS(mean, grade),
-      sas: thetaToSAS(z),
-      apr: thetaToPercentile(z),
-      stanine: percentileToStanine(thetaToPercentile(z))
+      theta: mean,
+      uss: thetaToUSS(mean),
+      sas: thetaToSAS(mean, effectiveNorm),
+      apr: thetaToPercentile(mean, effectiveNorm),
+      gpr: thetaToPercentile(mean, gradeNormEff),
+      stanine: percentileToStanine(thetaToPercentile(mean, effectiveNorm))
     };
   }
 
@@ -304,7 +351,14 @@
    *   A — all three batteries at about the same level
    *   B — one battery is a relative strength (+) or weakness (-)
    *   C — a contrast: at least one strength AND one weakness
-   *   E — an extreme difference (>= 24 SAS points between the highest and lowest)
+   *   E — an extreme difference, at least EXTREME_SAS_SPREAD SAS points
+   *
+   * A battery is called out only when its distance from the student's own
+   * three-battery average exceeds the measurement error of that distance. With
+   * three batteries the deviation of one from the mean of all three is
+   * (2/3)x_i - (1/3)x_j - (1/3)x_k, so its error variance is
+   * (4 V_i + V_j + V_k) / 9. Using the real per-battery standard errors keeps
+   * short tests from inventing strengths and weaknesses that are not there.
    */
   function abilityProfile(batteryResults) {
     var present = BATTERIES.filter(function (bat) { return batteryResults[bat]; });
@@ -316,19 +370,30 @@
     }
 
     var sasValues = present.map(function (bat) { return batteryResults[bat].sas; });
+    var variances = present.map(function (bat) {
+      var se = batteryResults[bat].seSAS;
+      return se * se;
+    });
     var stanines = present.map(function (bat) { return batteryResults[bat].stanine; });
     var mean = sasValues.reduce(function (a, b) { return a + b; }, 0) / sasValues.length;
     var spread = Math.max.apply(null, sasValues) - Math.min.apply(null, sasValues);
 
     var marks = [];
+    var thresholds = [];
     present.forEach(function (bat, i) {
+      var others = variances.filter(function (_, j) { return j !== i; });
+      var seDiff = Math.sqrt((4 * variances[i] + others[0] + others[1]) / 9);
+      var threshold = PROFILE_Z * seDiff;
+      thresholds.push(threshold);
+
       var diff = sasValues[i] - mean;
-      if (Math.abs(diff) >= SIGNIFICANT_SAS_DIFF) {
+      if (Math.abs(diff) >= threshold) {
         marks.push({
           battery: bat,
           code: BATTERY_CODE[bat] + (diff > 0 ? '+' : '-'),
           direction: diff > 0 ? 'strength' : 'weakness',
-          diff: Math.round(diff)
+          diff: Math.round(diff),
+          threshold: Math.round(threshold)
         });
       }
     });
@@ -337,7 +402,7 @@
     var hasWeakness = marks.some(function (m) { return m.direction === 'weakness'; });
 
     var letter;
-    if (spread >= EXTREME_SAS_SPREAD) letter = 'E';
+    if (marks.length && spread >= EXTREME_SAS_SPREAD) letter = 'E';
     else if (!marks.length) letter = 'A';
     else if (hasStrength && hasWeakness) letter = 'C';
     else letter = 'B';
@@ -345,18 +410,22 @@
     var med = Math.round(median(stanines));
     var label = med + letter + (marks.length ? ' (' + marks.map(function (m) { return m.code; }).join(' ') + ')' : '');
 
+    // The smallest gap this administration could have detected at all.
+    var minDetectable = Math.round(Math.min.apply(null, thresholds));
+
     return {
       available: true,
       medianStanine: med,
       letter: letter,
       marks: marks,
       spread: spread,
+      minDetectableDiff: minDetectable,
       label: label,
-      description: profileDescription(letter, marks, med)
+      description: profileDescription(letter, marks, med, minDetectable)
     };
   }
 
-  function profileDescription(letter, marks, medianStanine) {
+  function profileDescription(letter, marks, medianStanine, minDetectable) {
     var level = medianStanine <= 3 ? 'below the average range'
       : medianStanine <= 6 ? 'in the average range'
       : 'above the average range';
@@ -366,8 +435,9 @@
     }).join(', ');
 
     if (letter === 'A') {
-      return 'Scores across the three batteries were about the same, ' + level + '. ' +
-        'Reasoning strength is evenly balanced, so instruction does not need to lean on one channel.';
+      return 'No battery differed from the other two by more than measurement error, and overall performance is ' +
+        level + '. On this administration a gap smaller than about ' + minDetectable + ' SAS points could not be ' +
+        'told apart from noise, so "level" here means "no difference large enough to detect", not "identical".';
     }
     if (letter === 'B') {
       return 'One battery stands apart from the other two: ' + names + '. Overall performance is ' + level +
@@ -375,7 +445,7 @@
     }
     if (letter === 'C') {
       return 'A contrast pattern — ' + names + '. Overall performance is ' + level +
-        '. The gap is large enough to shape how new material is introduced.';
+        '. The gap is larger than measurement error in both directions, so it is worth shaping instruction around.';
     }
     return 'An extreme difference of at least ' + EXTREME_SAS_SPREAD + ' SAS points separates the highest and ' +
       'lowest batteries (' + (names || 'across batteries') + '). Overall performance is ' + level +
@@ -395,7 +465,7 @@
   /**
    * Full report.
    * @param {Object} opts
-   * @param {Array}  opts.items every item that was presented
+   * @param {Array}  opts.items every scored item that was presented
    * @param {Object} opts.answers itemId -> selected index
    * @param {number} opts.grade 0 = kindergarten
    * @param {number} [opts.ageMonths]
@@ -405,7 +475,7 @@
     var items = opts.items || [];
     var answers = opts.answers || {};
     var grade = typeof opts.grade === 'number' ? opts.grade : 5;
-    var profile = { grade: grade, ageMonths: opts.ageMonths };
+    var norms = normsFor(grade, opts.ageMonths);
 
     var byBattery = {};
     items.forEach(function (item) {
@@ -415,19 +485,20 @@
     var batteries = {};
     BATTERIES.forEach(function (bat) {
       if (byBattery[bat] && byBattery[bat].length) {
-        batteries[bat] = scoreBattery(byBattery[bat], answers, profile);
+        batteries[bat] = scoreBattery(byBattery[bat], answers, norms);
       }
     });
-
-    var subtests = subtestBreakdown(items, answers);
 
     return {
       grade: grade,
       ageMonths: opts.ageMonths,
+      level: opts.level || null,
+      form: opts.form || null,
+      norms: norms,
       batteries: batteries,
-      composite: composite(batteries, grade),
+      composite: composite(batteries, norms),
       profile: abilityProfile(batteries),
-      subtests: subtests,
+      subtests: subtestBreakdown(items, answers),
       totals: {
         raw: BATTERIES.reduce(function (sum, b) { return sum + (batteries[b] ? batteries[b].raw : 0); }, 0),
         possible: BATTERIES.reduce(function (sum, b) { return sum + (batteries[b] ? batteries[b].possible : 0); }, 0)
@@ -460,9 +531,10 @@
     BATTERY_LABELS: BATTERY_LABELS,
     SAS_MEAN: SAS_MEAN,
     SAS_SD: SAS_SD,
-    SIGNIFICANT_SAS_DIFF: SIGNIFICANT_SAS_DIFF,
+    PROFILE_Z: PROFILE_Z,
     EXTREME_SAS_SPREAD: EXTREME_SAS_SPREAD,
     pCorrect: pCorrect,
+    itemInformation: itemInformation,
     estimateTheta: estimateTheta,
     normCdf: normCdf,
     thetaToSAS: thetaToSAS,
@@ -470,7 +542,8 @@
     thetaToPercentile: thetaToPercentile,
     percentileToStanine: percentileToStanine,
     medianAgeMonths: medianAgeMonths,
-    ageAdjust: ageAdjust,
+    ageNorm: ageNorm,
+    normsFor: normsFor,
     scoreBattery: scoreBattery,
     composite: composite,
     abilityProfile: abilityProfile,
